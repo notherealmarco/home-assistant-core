@@ -10,6 +10,7 @@ from homeassistant.components.light import (
     ATTR_RGB_COLOR,
     ATTR_RGBW_COLOR,
     ATTR_TRANSITION,
+    ATTR_COLOR_TEMP,
     ColorMode,
     LightEntity,
     LightEntityFeature,
@@ -128,8 +129,8 @@ class WLEDSegmentLight(WLEDEntity, LightEntity):
         self._attr_color_mode = ColorMode.RGB
         self._attr_supported_color_modes = {ColorMode.RGB}
         if self._rgbw and self._wv:
-            self._attr_color_mode = ColorMode.RGBW
-            self._attr_supported_color_modes = {ColorMode.RGBW}
+            self._attr_color_mode = ColorMode.COLOR_TEMP # when initialized, it assumes it's white
+            self._attr_supported_color_modes = {ColorMode.RGBW, ColorMode.COLOR_TEMP}
 
     @property
     def available(self) -> bool:
@@ -153,6 +154,21 @@ class WLEDSegmentLight(WLEDEntity, LightEntity):
             tuple[int, int, int, int],
             self.coordinator.data.state.segments[self._segment].color_primary,
         )
+    
+    @property
+    def min_color_temp_kelvin(self) -> int:
+        """Return the coldest color_temp that this light supports."""
+        return 3500
+
+    @property
+    def max_color_temp_kelvin(self) -> int:
+        """Return the warmest color_temp that this light supports."""
+        return 6000
+
+    @property
+    def color_temp(self) -> int | None:
+        """Return the color temperature."""
+        return 166 + ((1 - ((self.coordinator.data.state.segments[self._segment].color_primary[0]) / 200)) * 119)
 
     @property
     def effect(self) -> str | None:
@@ -207,6 +223,17 @@ class WLEDSegmentLight(WLEDEntity, LightEntity):
             segment_id=self._segment, on=False, transition=transition
         )
 
+
+    async def compute_warm_cct(self, mireds) -> tuple[int, int, int, int]:
+        pct = 1 - (mireds - 166) / 119
+
+        R = 200 * pct
+        G = 255 * pct
+        B = 255 * pct
+        W = 255
+
+        return (R, G, B, W)
+
     @wled_exception_handler
     async def async_turn_on(self, **kwargs: Any) -> None:
         """Turn on the light."""
@@ -218,8 +245,17 @@ class WLEDSegmentLight(WLEDEntity, LightEntity):
         if ATTR_RGB_COLOR in kwargs:
             data[ATTR_COLOR_PRIMARY] = kwargs[ATTR_RGB_COLOR]
 
+            if self._rgbw and self._wv: self._attr_color_mode = "rgbw"
+            else: self._attr_color_mode = "rgb"
+
         if ATTR_RGBW_COLOR in kwargs:
             data[ATTR_COLOR_PRIMARY] = kwargs[ATTR_RGBW_COLOR]
+            self._attr_color_mode = "rgbw"
+
+        if ATTR_COLOR_TEMP in kwargs:
+            mireds = kwargs[ATTR_COLOR_TEMP]
+            data[ATTR_COLOR_PRIMARY] = await self.compute_warm_cct(mireds)
+            self._attr_color_mode = "color_temp"
 
         if ATTR_TRANSITION in kwargs:
             # WLED uses 100ms per unit, so 10 = 1 second.
